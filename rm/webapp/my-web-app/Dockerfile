@@ -1,53 +1,59 @@
-# FROM node:18-alpine as builder
+FROM node:18-alpine AS base
 
-# # Build arguments for user/group configurations
-# ARG USER_ID=10001
-# ARG USER_GROUP_ID=10001
-# ARG USER_HOME=/home/app
-
-# # Create app directory
-# WORKDIR ${USER_HOME}
-
-# # Copy the rest of the application code to the container
-# COPY --chown=${USER_ID}:${USER_GROUP_ID} . .
-
-# # Set environment variables
-# ENV HOST="0.0.0.0"
-# ENV DISABLE_DEV_SERVER_HOST_CHECK=true
-# ENV HTTPS=false
-
-# # Install dependencies
-# # RUN npm install --save --legacy-peer-deps 
-# RUN npm install --save --legacy-peer-deps
-# RUN mkdir -p node_modules/.cache && chmod -R 777 node_modules/.cache
-
-# USER 10001
-
-# # Set the env to "production"
-# ENV NODE_ENV production
-
-# EXPOSE 3000
-
-# # Start the application
-# CMD ["npm", "start", "--cache", "/tmp"]
-
-
-FROM node:18.16.0-alpine AS builder
+# Install dependencies only when needed
+FROM base AS deps
+# Check https://github.com/nodejs/docker-node/tree/b4117f9333da4138b03a546ec926ef50a31506c3#nodealpine to understand why libc6-compat might be needed.
+RUN apk add --no-cache libc6-compat
 WORKDIR /app
+
+# Install dependencies based on the preferred package manager
+COPY package.json yarn.lock* package-lock.json* pnpm-lock.yaml* ./
+RUN \
+  if [ -f yarn.lock ]; then yarn --frozen-lockfile; \
+  elif [ -f package-lock.json ]; then npm ci; \
+  elif [ -f pnpm-lock.yaml ]; then yarn global add pnpm && pnpm i --frozen-lockfile; \
+  else echo "Lockfile not found." && exit 1; \
+  fi
+
+
+# Rebuild the source code only when needed
+FROM base AS builder
+WORKDIR /app
+COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-# Install dependencies (npm ci makes sure the exact versions in the lockfile gets installed)
-RUN npm ci 
-RUN npm run build
 
-FROM nginxinc/nginx-unprivileged:1.24-alpine as production
+# Next.js collects completely anonymous telemetry data about general usage.
+# Learn more here: https://nextjs.org/telemetry
+# Uncomment the following line in case you want to disable telemetry during the build.
+# ENV NEXT_TELEMETRY_DISABLED 1
+
+RUN yarn build
+
+# If using npm comment out above and use below instead
+# RUN npm run build
+
+# Production image, copy all the files and run next
+FROM base AS runner
 WORKDIR /app
+
 ENV NODE_ENV production
-# Copy built assets from the 1st stage
-COPY --from=builder /app/build /usr/share/nginx/html
-# Add your routing config to nginx
-COPY nginx-conf/app-default.conf /etc/nginx/conf.d/app-default.conf
-EXPOSE 3000
-# add user
+# Uncomment the following line in case you want to disable telemetry during runtime.
+# ENV NEXT_TELEMETRY_DISABLED 1
+
+RUN addgroup --system --gid 1001 nodejs
+RUN adduser --system --uid 10014 nextjs
+
+COPY --from=builder /app/public ./public
+
+# Automatically leverage output traces to reduce image size
+# https://nextjs.org/docs/advanced-features/output-file-tracing
+COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
+COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+
 USER 10014
-# Start nginx
-CMD ["nginx", "-g", "daemon off;"]
+
+EXPOSE 3000
+
+ENV PORT 3000
+
+CMD ["node", "server.js"]
