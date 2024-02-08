@@ -17,6 +17,12 @@
 
 import ballerina/http;
 
+// The host of the database server. The default value is `localhost`.
+configurable string dbHost = "localhost";
+
+// This specifies that the password must be supplied in a configuration file.
+configurable string password = ?;
+
 # A service representing a network-accessible API
 # bound to port `9090`.
 service / on new http:Listener(9090) {
